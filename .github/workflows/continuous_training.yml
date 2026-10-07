@@ -1,0 +1,62 @@
+name: CT - Continuous Training Pipeline
+
+on:
+  schedule:
+    # Run retraining every Monday at midnight UTC
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      model_type:
+        description: 'Algorithm for retraining'
+        required: true
+        default: 'logistic'
+        type: choice
+        options:
+          - logistic
+          - random_forest
+
+jobs:
+  continuous-training:
+    name: Automated Model Retraining & Evaluation Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Retraining & MLflow Tracking
+        run: |
+          MODEL_TYPE="${{ github.event.inputs.model_type || 'logistic' }}"
+          echo "Retraining model type: $MODEL_TYPE"
+          python -m src.churn.train --model-type "$MODEL_TYPE" --register
+
+      - name: Evaluate Model Performance Quality Gate
+        run: |
+          python -c "
+          import json
+          with open('metrics/latest_metrics.json') as f:
+              m = json.load(f)
+          print('Evaluated Metrics:', m)
+          assert m['roc_auc'] >= 0.80, f'Model quality gate failed! ROC-AUC {m[\"roc_auc\"]} < 0.80'
+          print('Quality gate passed: ROC-AUC is above threshold.')
+          "
+
+      - name: Archive Metrics and Model Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrained-model-artifact
+          path: |
+            models/customer_churn_model.pkl
+            metrics/latest_metrics.json
+            metrics/confusion_matrix.png
